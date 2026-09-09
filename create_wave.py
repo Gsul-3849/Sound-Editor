@@ -4,45 +4,49 @@ from pydub import AudioSegment
 def get_wave_data(audio):
     samples = audio.get_array_of_samples()
 
-    channels = audio.channels
-
-    if channels > 1:
-        samples = samples[::channels]
+    if audio.channels > 1:
+        samples = samples[::audio.channels]
 
     return samples
 
-def draw_wave(self, audio):
 
+def draw_wave(self, audio):
     self.wave.delete("all")
 
-    samples = audio.get_array_of_samples()
+    samples = get_wave_data(audio)
+    width = max(1, self.wave.winfo_width())
+    height = max(1, self.wave.winfo_height())
 
-    width = self.wave.winfo_width()
-    height = self.wave.winfo_height()
+    if not samples:
+        return
 
-    step = max(1, len(samples) // width)
+    centre_y = height // 2
 
-    centre = height // 2
+    samples_per_x = max(1, len(samples) // width)
 
     for x in range(width):
-
-        start = x * step
-        end = min(start + step, len(samples))
-
+        start = x * samples_per_x
+        end = min(start + samples_per_x, len(samples))
         section = samples[start:end]
 
         if not section:
             continue
 
-        maximum = max(abs(value) for value in section)
-
-        y = int(
-            maximum / 32768 * (height // 2)
-        )
+        max_value = max(abs(value) for value in section)
+        amplitude = int(max_value / 32768 * centre_y)
 
         self.wave.create_line(
             x,
-            centre - y,
+            centre_y - amplitude,
             x,
-            centre + y
+            centre_y + amplitude,
+            fill="dodgerblue"
         )
+
+    self.wave.create_line(
+        0,
+        centre_y,
+        width,
+        centre_y,
+        fill="#d0d0d0"
+    )
