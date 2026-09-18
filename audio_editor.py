@@ -1,3 +1,4 @@
+import io
 import os
 import shutil
 import tkinter as tk
@@ -74,6 +75,7 @@ class AudioEditor:
         self.file_paths = {}
         self.current_audio = None
         self.currently_playing = None
+        self.playback_buffer = None
         self.is_paused = False
         self.audio_ready = False
         self.progress_cursor_id = None
@@ -310,8 +312,10 @@ class AudioEditor:
             elapsed_ms = self.cursor_ms
 
         if self.currently_playing is not None and self.current_audio is not None:
-            if pygame.mixer.get_busy() and not self.is_paused:
-                elapsed_ms = pygame.mixer.music.get_pos()
+            if pygame.mixer.music.get_busy() and not self.is_paused:
+                playback_position = pygame.mixer.music.get_pos()
+                if playback_position >= 0:
+                    elapsed_ms = self.selection_start_ms + playback_position
 
         self.cursor_ms = min(max(0, elapsed_ms), len(self.current_audio))
 
@@ -336,6 +340,11 @@ class AudioEditor:
 
         start_x = self._ms_to_canvas_x(self.selection_start_ms)
         end_x = self._ms_to_canvas_x(self.selection_end_ms)
+        cursor_x = self._ms_to_canvas_x(self.cursor_ms)
+
+        if abs(event.x - cursor_x) <= 6:
+            self.drag_mode = "cursor"
+            return
 
         if abs(event.x - start_x) <= 6:
             self.drag_mode = "start"
@@ -354,8 +363,10 @@ class AudioEditor:
 
         if self.drag_mode == "cursor":
             self._set_cursor_from_event(event.x)
-            if pygame.mixer.get_busy() and not self.is_paused:
-                pygame.mixer.music.set_pos(self.cursor_ms / 1000)
+            if self.currently_playing is not None:
+                pygame.mixer.music.set_pos(
+                    max(0, self.cursor_ms - self.selection_start_ms) / 1000
+                )
             return
 
         if self.drag_mode == "start":
@@ -368,13 +379,19 @@ class AudioEditor:
         self._draw_selection_markers()
 
     def _on_wave_release(self, event):
+        if self.drag_mode == "cursor" and self.current_audio is not None:
+            if self.currently_playing is None or self.is_paused:
+                self.play_audio(start_ms=self.cursor_ms)
         self.drag_mode = None
 
     def _set_cursor_from_event(self, x):
         if self.current_audio is None:
             return
 
-        self.cursor_ms = self._canvas_x_to_ms(x)
+        self.cursor_ms = min(
+            max(self._canvas_x_to_ms(x), self.selection_start_ms),
+            self.selection_end_ms,
+        )
         self._draw_progress_cursor(self.cursor_ms)
 
     def _set_selection_from_current_audio(self):
@@ -399,7 +416,18 @@ class AudioEditor:
             self._stop_progress_updates()
             return
 
-        elapsed_ms = pygame.mixer.music.get_pos()
+        playback_position = pygame.mixer.music.get_pos()
+        elapsed_ms = self.selection_start_ms + max(0, playback_position)
+
+        if elapsed_ms >= self.selection_end_ms or not pygame.mixer.music.get_busy():
+            pygame.mixer.music.stop()
+            self.currently_playing = None
+            self.is_paused = False
+            self._stop_progress_updates()
+            self._draw_progress_cursor(self.selection_end_ms)
+            self.time_label.config(text="Stopped")
+            return
+
         self._draw_progress_cursor(elapsed_ms)
         self.progress_job = self.root.after(50, self._update_progress_cursor)
 
@@ -449,7 +477,7 @@ class AudioEditor:
             self._draw_selection_markers()
             self._draw_progress_cursor(0)
 
-    def play_audio(self):
+    def play_audio(self, start_ms=None):
         if self.file_list.size() == 0 or not self.audio_ready:
             return
 
@@ -463,20 +491,36 @@ class AudioEditor:
         if not file_path:
             return
 
-        self.current_audio = self.audio_files[selected_name]
-        self._set_selection_from_current_audio()
-        self.cursor_ms = max(self.selection_start_ms, self.cursor_ms)
+        selected_audio = self.audio_files[selected_name]
+        if self.current_audio is not selected_audio:
+            self.current_audio = selected_audio
+            self._set_selection_from_current_audio()
 
-        if self.is_paused and self.currently_playing == selected_name:
+        if start_ms is None:
+            start_ms = self.selection_start_ms
+        else:
+            start_ms = min(
+                max(start_ms, self.selection_start_ms),
+                self.selection_end_ms,
+            )
+
+        if start_ms == self.selection_start_ms and self.is_paused and self.currently_playing == selected_name:
             pygame.mixer.music.unpause()
             self.is_paused = False
             self.time_label.config(text=f"Playing: {selected_name}")
             self._start_progress_updates()
             return
 
+        self.cursor_ms = start_ms
         pygame.mixer.music.stop()
-        pygame.mixer.music.load(file_path)
-        pygame.mixer.music.play(start=self.cursor_ms / 1000)
+        self.playback_buffer = io.BytesIO()
+        self.current_audio[start_ms:self.selection_end_ms].export(
+            self.playback_buffer,
+            format="wav",
+        )
+        self.playback_buffer.seek(0)
+        pygame.mixer.music.load(self.playback_buffer, namehint="wav")
+        pygame.mixer.music.play()
         self.currently_playing = selected_name
         self.current_audio = self.audio_files[selected_name]
         self.is_paused = False
